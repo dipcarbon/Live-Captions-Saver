@@ -102,13 +102,6 @@
         #saveButton, #saveDropdownButton { background-color: #28a745; }
         #saveButton:not(:disabled):hover, #saveDropdownButton:not(:disabled):hover { background-color: #1e7e34; }
 
-        #viewButton { 
-            background-color: #17a2b8; 
-            flex-grow: 1; 
-            border-radius: 6px; 
-        }
-        #viewButton:not(:disabled):hover { background-color: #138496; }
-
         .split-button {
             position: relative;
             display: flex;
@@ -266,102 +259,6 @@
             text-align: left;
         }
 
-        /* --- AI Customization --- */
-        textarea#aiInstructions {
-            width: 100%;
-            box-sizing: border-box;
-            padding: 8px;
-            border-radius: 4px;
-            border: 1px solid #ccc;
-            font-family: inherit;
-            font-size: 13px;
-            resize: vertical;
-        }
-        .prompt-suggestion-container {
-            display: flex;
-            gap: 5px;
-            margin-top: 8px;
-            flex-wrap: wrap;
-        }
-        .prompt-button {
-            background-color: #e9ecef;
-            color: #495057;
-            border: 1px solid #dee2e6;
-            border-radius: 12px;
-            padding: 4px 10px;
-            font-size: 12px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: background-color 0.2s ease, border-color 0.2s ease;
-        }
-        .prompt-button:hover {
-            background-color: #dee2e6;
-            border-color: #ced4da;
-        }
-        
-        /* Session History Styles */
-        .session-item {
-            padding: 8px;
-            margin-bottom: 8px;
-            background: #f8f9fa;
-            border-radius: 6px;
-            border: 1px solid #e9ecef;
-            cursor: pointer;
-            transition: all 0.2s ease;
-        }
-        .session-item:hover {
-            background: #e9ecef;
-            border-color: #dee2e6;
-        }
-        .session-title {
-            font-weight: 600;
-            color: #333;
-            display: block;
-            margin-bottom: 4px;
-        }
-        .session-meta {
-            font-size: 12px;
-            color: #6c757d;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .session-actions {
-            display: flex;
-            gap: 5px;
-            margin-top: 5px;
-        }
-        .session-btn {
-            padding: 4px 8px;
-            font-size: 11px;
-            border: 1px solid #dee2e6;
-            background: white;
-            color: #333;  /* Fix: Added text color */
-            border-radius: 4px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .session-btn:hover {
-            background: #007bff;
-            color: white;
-            border-color: #007bff;
-        }
-        .session-btn.delete {
-            color: #dc3545;  /* Red text for delete button */
-        }
-        .session-btn.delete:hover {
-            background: #dc3545;
-            color: white;
-            border-color: #dc3545;
-        }
-        .storage-info {
-            font-size: 11px;
-            color: #6c757d;
-            text-align: center;
-            margin-top: 8px;
-            padding-top: 8px;
-            border-top: 1px solid #e9ecef;
-        }
     </style>
     <script src="popup.js" defer></script>
 </head>
@@ -384,32 +281,14 @@
             </div>
         </div>
         <div class="split-button" id="save-container">
-            <button id="saveButton" class="split-button-main" disabled>Save as TXT</button>
+            <button id="saveButton" class="split-button-main" disabled>Save as Markdown</button>
             <button id="saveDropdownButton" class="split-button-dropdown" disabled>▾</button>
             <div id="saveOptions" class="split-button-options">
-                <a href="#" data-format="txt">Save as TXT (.txt)</a>
                 <a href="#" data-format="md">Save as Markdown (.md)</a>
-                <a href="#" data-format="doc">Save as Word (.doc)</a>
-                <a href="#" data-format="json">Save as JSON (.json)</a>
-                <div class="dropdown-divider"></div>
-                <a href="#" data-format="ai">Save for AI Analysis (.txt)</a>
+                <a href="#" data-format="txt">Save as TXT (.txt)</a>
             </div>
         </div>
     </div>
-    <div class="button-container">
-         <button id="viewButton" disabled>View Transcript</button>
-    </div>
-    
-    <!-- Session History -->
-    <div id="sessionHistory" class="button-container" style="margin-top: 10px; display: none;">
-        <button id="historyButton" style="background-color: #6c757d; flex-grow: 1; border-radius: 6px;">
-            📁 View Previous Sessions
-        </button>
-    </div>
-    <div id="sessionList" style="display: none; margin-top: 10px; max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 6px; padding: 10px;">
-        <div style="text-align: center; color: #999;">Loading sessions...</div>
-    </div>
-
     <div class="settings-container">
         <h3 class="settings-header">Settings</h3>
 
@@ -418,105 +297,6 @@
             <div id="speaker-alias-container">
                  <label class="setting-label" style="margin-bottom: 10px;">Speaker Aliases</label>
                  <div id="speaker-alias-list"><p>Start capturing to see the speaker list.</p></div>
-            </div>
-        </div>
-
-        <div class="settings-group">
-            <p class="settings-subheader">Export & Automation</p>
-            <div class="setting-item">
-                <label for="defaultSaveFormat" class="setting-label">Default Save Format</label>
-                <select id="defaultSaveFormat">
-                    <option value="txt">TXT</option>
-                    <option value="md">Markdown</option>
-                    <option value="doc">Word</option>
-                    <option value="json">JSON</option>
-                    <option value="ai">AI Analysis</option>
-                </select>
-            </div>
-            <div class="setting-item">
-                <label for="autoSaveOnEndToggle" class="setting-label">Auto-Save on Meeting End</label>
-                <label class="toggle-switch"><input type="checkbox" id="autoSaveOnEndToggle"><span class="slider"></span></label>
-            </div>
-             <p class="small-info-text">Automatically saves in your default format when you leave a meeting.</p>
-        </div>
-
-        <div class="settings-group">
-            <p class="settings-subheader">Capture Settings</p>
-            <div class="setting-item">
-                <label for="trackCaptionsToggle" class="setting-label">Track Live Captions</label>
-                <label class="toggle-switch"><input type="checkbox" id="trackCaptionsToggle" checked><span class="slider"></span></label>
-            </div>
-            <p class="small-info-text">Capture and save meeting captions when available.</p>
-            <div class="setting-item">
-                <label for="trackAttendeesToggle" class="setting-label">Track Meeting Attendees</label>
-                <label class="toggle-switch"><input type="checkbox" id="trackAttendeesToggle"><span class="slider"></span></label>
-            </div>
-            <p class="small-info-text">Monitor who joins/leaves the meeting and include in exports.</p>
-            
-            <p class="settings-subheader">Automation Settings</p>
-            <div class="setting-item">
-                <label for="autoEnableCaptionsToggle" class="setting-label">Auto-open Live Captions</label>
-                <label class="toggle-switch"><input type="checkbox" id="autoEnableCaptionsToggle"><span class="slider"></span></label>
-            </div>
-            <p class="small-info-text">Automatically enable Teams captions when joining a meeting.</p>
-            <div class="setting-item">
-                <label for="autoOpenAttendeesToggle" class="setting-label">Auto-open Attendee Panel</label>
-                <label class="toggle-switch"><input type="checkbox" id="autoOpenAttendeesToggle"><span class="slider"></span></label>
-            </div>
-            <p class="small-info-text">Automatically open roster panel for attendee tracking (requires "Track Meeting Attendees" to be enabled).</p>
-            <div class="setting-item">
-                <label for="timestampFormat" class="setting-label">Timestamp Format</label>
-                <select id="timestampFormat" style="padding: 5px; border-radius: 4px; border: 1px solid #ccc;">
-                    <option value="12hr">12-hour (2:30:45 PM)</option>
-                    <option value="24hr">24-hour (14:30:45)</option>
-                    <option value="relative">Relative (00:30:45)</option>
-                </select>
-            </div>
-            <div class="setting-item">
-                <label for="filenamePattern" class="setting-label">Filename Pattern</label>
-                <input type="text" id="filenamePattern" 
-                    value="{date}_{title}_{format}" 
-                    placeholder="{date}_{title}_{format}"
-                    style="width: 100%; padding: 5px; border-radius: 4px; border: 1px solid #ccc; font-size: 13px;">
-            </div>
-            <p class="small-info-text">Variables: {date}, {time}, {title}, {format}, {attendees}</p>
-        </div>
-
-        <div class="settings-group">
-             <p class="settings-subheader">AI Customization</p>
-             <label for="aiInstructions" class="setting-label" style="margin-bottom: 5px;">Custom AI Instructions</label>
-             <p class="small-info-text" style="margin: 0 0 8px 0;">This text is used for "Copy/Save for AI" actions.</p>
-             <textarea id="aiInstructions" rows="4" placeholder="Example: Summarize this transcript into key action items..."></textarea>
-            <div style="margin: 8px 0;">
-                <label for="meetingType" class="setting-label" style="font-size: 12px;">Meeting Type Templates:</label>
-                <div style="display: flex; gap: 5px; margin-bottom: 8px;">
-                    <select id="meetingType" style="flex: 1; padding: 5px; border-radius: 4px; border: 1px solid #ccc;">
-                        <option value="">-- Select Template --</option>
-                        <optgroup label="Built-in Templates">
-                            <option value="executive">Executive Summary</option>
-                            <option value="standup">Daily Standup</option>
-                            <option value="retrospective">Retrospective</option>
-                            <option value="planning">Sprint Planning</option>
-                            <option value="review">Design Review</option>
-                            <option value="interview">Interview</option>
-                            <option value="allhands">All Hands</option>
-                            <option value="1on1">One-on-One</option>
-                            <option value="brainstorm">Brainstorming</option>
-                        </optgroup>
-                        <optgroup label="Custom Templates" id="customTemplatesGroup">
-                        </optgroup>
-                    </select>
-                    <button id="deleteTemplateBtn" style="padding: 5px 10px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; display: none;" title="Delete selected custom template">🗑️</button>
-                </div>
-                <div style="display: flex; gap: 5px;">
-                    <input type="text" id="templateName" placeholder="Template name..." style="flex: 1; padding: 5px; border-radius: 4px; border: 1px solid #ccc; font-size: 13px;">
-                    <button id="saveTemplateBtn" style="padding: 5px 15px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer;" title="Save current instructions as template">Save Template</button>
-                </div>
-            </div>
-            <div class="prompt-suggestion-container">
-                <button class="prompt-button">Summarize</button>
-                <button class="prompt-button">List Action Items</button>
-                <button class="prompt-button">Find Decisions</button>
             </div>
         </div>
     </div>

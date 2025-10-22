@@ -13,6 +13,7 @@
   "permissions": [
     "downloads",
     "activeTab",
+    "tabs",
     "storage"
   ],
 

@@ -9,6 +9,13 @@ const TIMING = {
     INITIAL_ATTENDEE_DELAY: 1500, // Wait 1.5s after meeting start before first check
 };
 
+const SCREENSHOT = {
+    DEFAULT_INTERVAL_SECONDS: 60,
+    MIN_INTERVAL_SECONDS: 5,
+    MAX_LOCAL_SCREENSHOTS: 20,
+    DEFAULT_DIFF_THRESHOLD: 0.1
+};
+
 const SELECTORS = {
     CAPTIONS_RENDERER: "[data-tid='closed-caption-v2-window-wrapper'], [data-tid='closed-captions-renderer'], [data-tid*='closed-caption']",
     CHAT_MESSAGE: '.fui-ChatMessageCompact',
@@ -53,6 +60,20 @@ let autoEnableLastAttempt = 0;
 let autoEnableDebounceTimer = null;
 let autoSaveTriggered = false;
 let lastMeetingId = null;
+let currentMeetingSessionId = null;
+
+// --- Screenshot Capture State ---
+let screenshotIntervalId = null;
+let screenshotCaptureInProgress = false;
+let lastScreenshotImageData = null;
+let savedScreenshots = [];
+let screenshotSettings = {
+    enabled: false,
+    intervalSeconds: SCREENSHOT.DEFAULT_INTERVAL_SECONDS,
+    diffThreshold: SCREENSHOT.DEFAULT_DIFF_THRESHOLD
+};
+const screenshotCanvas = document.createElement('canvas');
+const screenshotContext = screenshotCanvas.getContext('2d', { willReadFrequently: true });
 
 // --- Attendee Tracking State ---
 let attendeeUpdateInterval = null;
@@ -157,6 +178,237 @@ class RetryHandler {
 
 // --- Utility Functions ---
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+function sendRuntimeMessage(message) {
+    return new Promise((resolve, reject) => {
+        try {
+            chrome.runtime.sendMessage(message, (response) => {
+                const lastError = chrome.runtime.lastError;
+                if (lastError) {
+                    reject(new Error(lastError.message));
+                    return;
+                }
+                resolve(response);
+            });
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
+function sanitizeMeetingTitle(value) {
+    if (!value) return 'Meeting';
+    return value.replace(/[<>:"/\\|?*]/g, '_').replace(/\s+/g, '_').slice(0, 120) || 'Meeting';
+}
+
+function generateMeetingSessionId() {
+    const title = sanitizeMeetingTitle(meetingTitleOnStart || document.title || 'Meeting');
+    const start = recordingStartTime ? recordingStartTime.toISOString() : new Date().toISOString();
+    return `${title}_${start}`;
+}
+
+function getCurrentMeetingSessionId() {
+    return currentMeetingSessionId;
+}
+
+function clearScreenshotSession(options = {}) {
+    if (screenshotIntervalId) {
+        clearInterval(screenshotIntervalId);
+        screenshotIntervalId = null;
+    }
+    screenshotCaptureInProgress = false;
+    lastScreenshotImageData = null;
+
+    if (screenshotContext && screenshotCanvas.width && screenshotCanvas.height) {
+        screenshotContext.clearRect(0, 0, screenshotCanvas.width, screenshotCanvas.height);
+    }
+
+    if (!options.preserveScreenshots) {
+        savedScreenshots = [];
+    }
+}
+
+function disableScreenshotSession(reason) {
+    if (reason) {
+        console.warn(`[Teams Caption Saver] Screenshot capture disabled: ${reason}`);
+        if (reason === 'missing_permission') {
+            console.warn('[Teams Caption Saver] Grant the "tabs" permission to enable screenshot capture.');
+        }
+    }
+    clearScreenshotSession({ preserveScreenshots: true });
+    screenshotSettings.enabled = false;
+}
+
+function loadImageFromDataUrl(dataUrl) {
+    return new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = reject;
+        image.src = dataUrl;
+    });
+}
+
+async function refreshScreenshotSettings() {
+    try {
+        const settings = await chrome.storage.sync.get([
+            'screenshotEnabled',
+            'screenshotIntervalSeconds',
+            'screenshotDiffThreshold'
+        ]);
+
+        const interval = Number(settings.screenshotIntervalSeconds);
+        const diff = Number(settings.screenshotDiffThreshold);
+
+        screenshotSettings = {
+            enabled: typeof settings.screenshotEnabled === 'boolean' ? settings.screenshotEnabled : false,
+            intervalSeconds: clamp(
+                Number.isFinite(interval) && interval > 0 ? interval : SCREENSHOT.DEFAULT_INTERVAL_SECONDS,
+                SCREENSHOT.MIN_INTERVAL_SECONDS,
+                Number.MAX_SAFE_INTEGER
+            ),
+            diffThreshold: clamp(
+                Number.isFinite(diff) ? diff : SCREENSHOT.DEFAULT_DIFF_THRESHOLD,
+                0,
+                1
+            )
+        };
+    } catch (error) {
+        console.warn('[Teams Caption Saver] Unable to refresh screenshot settings:', error);
+        screenshotSettings = {
+            enabled: false,
+            intervalSeconds: SCREENSHOT.DEFAULT_INTERVAL_SECONDS,
+            diffThreshold: SCREENSHOT.DEFAULT_DIFF_THRESHOLD
+        };
+    }
+}
+
+async function initializeScreenshotSession() {
+    clearScreenshotSession();
+    await refreshScreenshotSettings();
+
+    if (!screenshotSettings.enabled) {
+        return;
+    }
+
+    savedScreenshots = [];
+    lastScreenshotImageData = null;
+
+    const intervalMs = Math.max(
+        SCREENSHOT.MIN_INTERVAL_SECONDS,
+        screenshotSettings.intervalSeconds
+    ) * 1000;
+
+    screenshotIntervalId = setInterval(() => {
+        captureScreenshotFrame().catch(error => {
+            console.warn('[Teams Caption Saver] Screenshot capture interval error:', error);
+        });
+    }, intervalMs);
+
+    // Capture an initial frame immediately
+    await captureScreenshotFrame();
+}
+
+async function captureScreenshotFrame() {
+    if (!capturing || !screenshotSettings.enabled || screenshotCaptureInProgress) {
+        return;
+    }
+
+    const meetingId = getCurrentMeetingSessionId();
+    if (!meetingId) {
+        return;
+    }
+
+    if (!screenshotContext) {
+        disableScreenshotSession('Offscreen canvas unavailable');
+        return;
+    }
+
+    screenshotCaptureInProgress = true;
+    try {
+        const response = await sendRuntimeMessage({ message: 'capture_screenshot' });
+        if (!response) {
+            return;
+        }
+
+        if (response.error) {
+            disableScreenshotSession(response.error);
+            return;
+        }
+
+        if (response.dataUrl) {
+            await processScreenshotFrame(response.dataUrl, meetingId);
+        }
+    } catch (error) {
+        console.warn('[Teams Caption Saver] Screenshot capture failed:', error);
+    } finally {
+        screenshotCaptureInProgress = false;
+    }
+}
+
+async function processScreenshotFrame(dataUrl, meetingId) {
+    try {
+        const image = await loadImageFromDataUrl(dataUrl);
+        const width = image.naturalWidth || image.width;
+        const height = image.naturalHeight || image.height;
+
+        if (!width || !height) {
+            return;
+        }
+
+        screenshotCanvas.width = width;
+        screenshotCanvas.height = height;
+        screenshotContext.clearRect(0, 0, width, height);
+        screenshotContext.drawImage(image, 0, 0, width, height);
+
+        const currentData = screenshotContext.getImageData(0, 0, width, height);
+        const currentPixels = new Uint8ClampedArray(currentData.data);
+        const previousFrame = lastScreenshotImageData;
+
+        let diffRatio = 1;
+        if (previousFrame && previousFrame.width === width && previousFrame.height === height) {
+            const prevPixels = previousFrame.data;
+            const totalPixels = currentPixels.length / 4;
+            let diffAccumulator = 0;
+
+            for (let i = 0; i < currentPixels.length; i += 4) {
+                const dr = Math.abs(currentPixels[i] - prevPixels[i]);
+                const dg = Math.abs(currentPixels[i + 1] - prevPixels[i + 1]);
+                const db = Math.abs(currentPixels[i + 2] - prevPixels[i + 2]);
+                diffAccumulator += (dr + dg + db) / (255 * 3);
+            }
+
+            diffRatio = diffAccumulator / totalPixels;
+        }
+
+        lastScreenshotImageData = {
+            width,
+            height,
+            data: currentPixels
+        };
+
+        if (previousFrame && diffRatio < screenshotSettings.diffThreshold) {
+            return;
+        }
+
+        const timestamp = new Date().toISOString();
+        const screenshotEntry = { timestamp, dataUrl, diffRatio };
+
+        savedScreenshots.push(screenshotEntry);
+        if (savedScreenshots.length > SCREENSHOT.MAX_LOCAL_SCREENSHOTS) {
+            savedScreenshots.splice(0, savedScreenshots.length - SCREENSHOT.MAX_LOCAL_SCREENSHOTS);
+        }
+
+        await sendRuntimeMessage({
+            message: 'store_screenshot',
+            meetingId,
+            screenshot: screenshotEntry
+        }).catch(() => {});
+    } catch (error) {
+        console.warn('[Teams Caption Saver] Failed to process screenshot frame:', error);
+    }
+}
 
 const getCleanTranscript = () => transcriptArray.map(({ key, ...rest }) => rest);
 
@@ -614,17 +866,32 @@ async function startCaptureSession() {
     capturing = true;
     meetingTitleOnStart = document.title;
     recordingStartTime = new Date();
-    
+    currentMeetingSessionId = generateMeetingSessionId();
+
     console.log(`Capture started. Title: "${meetingTitleOnStart}", Time: ${recordingStartTime.toLocaleString()}`);
-    
+
     // Start periodic backup
     startPeriodicBackup();
-    
+
     // Start attendee tracking
     startAttendeeTracking();
-    
-    chrome.runtime.sendMessage({ message: "update_badge_status", capturing: true });
-    
+
+    try {
+        await initializeScreenshotSession();
+    } catch (error) {
+        console.warn('[Teams Caption Saver] Unable to initialize screenshot session:', error);
+    }
+
+    try {
+        chrome.runtime.sendMessage({
+            message: "update_badge_status",
+            capturing: true,
+            meetingId: getCurrentMeetingSessionId()
+        });
+    } catch (error) {
+        console.warn('[Teams Caption Saver] Failed to notify badge status (start):', error);
+    }
+
     ensureObserverIsActive();
 }
 
@@ -659,6 +926,7 @@ function stopCaptureSession() {
     if (!capturing) return;
 
     console.log("Captions turned off or meeting ended. Capture stopped. Data preserved.");
+    const meetingId = getCurrentMeetingSessionId();
     capturing = false;
     if (observer) {
         observer.disconnect();
@@ -671,7 +939,9 @@ function stopCaptureSession() {
         clearInterval(backupInterval);
         backupInterval = null;
     }
-    
+
+    clearScreenshotSession();
+
     // Final backup before stopping
     if (transcriptArray.length > 0) {
         chrome.storage.local.set({
@@ -690,8 +960,18 @@ function stopCaptureSession() {
     
     // Stop attendee tracking
     stopAttendeeTracking();
-    
-    chrome.runtime.sendMessage({ message: "update_badge_status", capturing: false });
+
+    try {
+        chrome.runtime.sendMessage({
+            message: "update_badge_status",
+            capturing: false,
+            meetingId
+        });
+    } catch (error) {
+        console.warn('[Teams Caption Saver] Failed to notify badge status (stop):', error);
+    }
+
+    currentMeetingSessionId = null;
 }
 
 // Save current transcript to session history

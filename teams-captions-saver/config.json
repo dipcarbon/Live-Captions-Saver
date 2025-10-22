@@ -7,5 +7,8 @@
   "trackAttendees": true,
   "autoOpenAttendees": true,
   "filenamePattern": "{date}_{title}",
-  "timestampFormat": "12hr"
+  "timestampFormat": "12hr",
+  "screenshotEnabled": false,
+  "screenshotIntervalSeconds": 60,
+  "screenshotDiffThreshold": 0.1
 }

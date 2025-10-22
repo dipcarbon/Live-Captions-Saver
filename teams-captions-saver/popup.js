@@ -14,6 +14,11 @@ const UI_ELEMENTS = {
 
 let currentDefaultFormat = 'md';
 let extensionConfig = null;
+let currentScreenshotSettings = {
+    enabled: false,
+    intervalSeconds: 60,
+    diffThreshold: 0.1
+};
 
 // --- Error Handling ---
 function safeExecute(fn, context = '', fallback = null) {
@@ -155,16 +160,56 @@ async function getExtensionConfig() {
 
 async function loadSettings() {
     const config = await getExtensionConfig();
-    const [{ autoEnableCaptions }, { defaultSaveFormat }] = await Promise.all([
-        chrome.storage.sync.get('autoEnableCaptions'),
-        chrome.storage.sync.get('defaultSaveFormat')
+    const settings = await chrome.storage.sync.get([
+        'autoEnableCaptions',
+        'defaultSaveFormat',
+        'screenshotEnabled',
+        'screenshotIntervalSeconds',
+        'screenshotDiffThreshold'
     ]);
     const allowedFormats = config.allowedSaveFormats || ['md', 'txt'];
-    const shouldAutoEnable = (autoEnableCaptions ?? config.autoEnableCaptions) === true;
-    const storedFormat = defaultSaveFormat && allowedFormats.includes(defaultSaveFormat) ? defaultSaveFormat : null;
+    const shouldAutoEnable = (settings.autoEnableCaptions ?? config.autoEnableCaptions) === true;
+    const storedFormat = settings.defaultSaveFormat && allowedFormats.includes(settings.defaultSaveFormat) ? settings.defaultSaveFormat : null;
 
     currentDefaultFormat = storedFormat || config.defaultSaveFormat || allowedFormats[0] || 'md';
     updateSaveButtonText(currentDefaultFormat);
+
+    const defaultScreenshotEnabled = config.screenshotEnabled ?? false;
+    const defaultInterval = Number(config.screenshotIntervalSeconds ?? 60) || 60;
+    const defaultDiff = Number(config.screenshotDiffThreshold ?? 0.1) || 0.1;
+
+    const intervalFromSettings = Number(settings.screenshotIntervalSeconds);
+    let screenshotIntervalSeconds = Number.isFinite(intervalFromSettings) && intervalFromSettings > 0 ? intervalFromSettings : defaultInterval;
+    screenshotIntervalSeconds = Math.max(5, screenshotIntervalSeconds);
+
+    const diffFromSettings = Number(settings.screenshotDiffThreshold);
+    let screenshotDiffThreshold = Number.isFinite(diffFromSettings) ? diffFromSettings : defaultDiff;
+    screenshotDiffThreshold = Math.min(1, Math.max(0, screenshotDiffThreshold));
+
+    const screenshotEnabled = typeof settings.screenshotEnabled === 'boolean'
+        ? settings.screenshotEnabled
+        : defaultScreenshotEnabled;
+
+    currentScreenshotSettings = {
+        enabled: screenshotEnabled,
+        intervalSeconds: screenshotIntervalSeconds,
+        diffThreshold: screenshotDiffThreshold
+    };
+
+    const updates = {};
+    if (settings.screenshotEnabled === undefined && typeof screenshotEnabled === 'boolean') {
+        updates.screenshotEnabled = screenshotEnabled;
+    }
+    if (!Number.isFinite(intervalFromSettings) || intervalFromSettings <= 0) {
+        updates.screenshotIntervalSeconds = screenshotIntervalSeconds;
+    }
+    if (!Number.isFinite(diffFromSettings) || diffFromSettings < 0 || diffFromSettings > 1) {
+        updates.screenshotDiffThreshold = screenshotDiffThreshold;
+    }
+
+    if (Object.keys(updates).length > 0) {
+        await chrome.storage.sync.set(updates);
+    }
 
     if (UI_ELEMENTS.manualStartInfo) {
         UI_ELEMENTS.manualStartInfo.style.display = shouldAutoEnable ? 'none' : 'block';

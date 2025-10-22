@@ -1,0 +1,11 @@
+{
+  "allowedSaveFormats": ["md", "txt"],
+  "defaultSaveFormat": "md",
+  "autoEnableCaptions": true,
+  "autoSaveOnEnd": false,
+  "trackCaptions": true,
+  "trackAttendees": true,
+  "autoOpenAttendees": true,
+  "filenamePattern": "{date}_{title}",
+  "timestampFormat": "12hr"
+}

@@ -50,6 +50,9 @@ function applyAliasesToAttendeeReport(attendeeReport, aliases = {}) {
 
 const CONFIG_URL = chrome.runtime.getURL('config.json');
 let cachedConfig = null;
+const SCREENSHOT_KEY_PREFIX = 'screenshots_';
+const MAX_SCREENSHOTS_PER_MEETING = 20;
+const screenshotBuffers = new Map();
 
 async function loadExtensionConfig() {
     if (cachedConfig) {
@@ -72,7 +75,10 @@ async function ensureDefaultSettings() {
             trackAttendees: config.trackAttendees,
             autoOpenAttendees: config.autoOpenAttendees,
             filenamePattern: config.filenamePattern,
-            timestampFormat: config.timestampFormat
+            timestampFormat: config.timestampFormat,
+            screenshotEnabled: config.screenshotEnabled,
+            screenshotIntervalSeconds: config.screenshotIntervalSeconds,
+            screenshotDiffThreshold: config.screenshotDiffThreshold
         };
 
         const stored = await chrome.storage.sync.get(Object.keys(defaults));
@@ -99,6 +105,54 @@ async function ensureDefaultSettings() {
 }
 
 ensureDefaultSettings();
+
+function getScreenshotStorageKey(meetingId) {
+    return `${SCREENSHOT_KEY_PREFIX}${meetingId}`;
+}
+
+async function hasTabsPermission() {
+    if (!chrome.permissions?.contains) {
+        return true;
+    }
+    try {
+        return await chrome.permissions.contains({ permissions: ['tabs'] });
+    } catch (error) {
+        console.warn('[Service Worker] Unable to verify tabs permission:', error);
+        return false;
+    }
+}
+
+async function storeScreenshotForMeeting(meetingId, screenshot) {
+    if (!meetingId || !screenshot?.dataUrl || !screenshot?.timestamp) {
+        return;
+    }
+
+    const storageKey = getScreenshotStorageKey(meetingId);
+    let buffer = screenshotBuffers.get(meetingId);
+
+    if (!buffer) {
+        const stored = await chrome.storage.local.get(storageKey);
+        buffer = Array.isArray(stored[storageKey]) ? stored[storageKey] : [];
+    }
+
+    buffer.push(screenshot);
+    if (buffer.length > MAX_SCREENSHOTS_PER_MEETING) {
+        buffer = buffer.slice(-MAX_SCREENSHOTS_PER_MEETING);
+    }
+
+    screenshotBuffers.set(meetingId, buffer);
+    await chrome.storage.local.set({ [storageKey]: buffer });
+}
+
+async function clearScreenshotsForMeeting(meetingId) {
+    if (!meetingId) {
+        return;
+    }
+
+    screenshotBuffers.delete(meetingId);
+    const storageKey = getScreenshotStorageKey(meetingId);
+    await chrome.storage.local.remove(storageKey);
+}
 
 // --- Formatting Functions ---
 function formatAsTxt(transcript, attendeeReport) {
@@ -315,6 +369,32 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.message === 'capture_screenshot') {
+        (async () => {
+            if (!chrome.tabs?.captureVisibleTab) {
+                sendResponse({ error: 'capture_not_supported' });
+                return;
+            }
+
+            const permissionGranted = await hasTabsPermission();
+            if (!permissionGranted) {
+                sendResponse({ error: 'missing_permission' });
+                return;
+            }
+
+            try {
+                const windowId = sender?.tab?.windowId;
+                const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+                sendResponse({ dataUrl });
+            } catch (error) {
+                console.error('[Service Worker] Failed to capture screenshot:', error);
+                sendResponse({ error: error?.message || 'capture_failed' });
+            }
+        })();
+
+        return true;
+    }
+
     (async () => {
         const { speakerAliases } = await chrome.storage.session.get('speakerAliases');
 
@@ -327,7 +407,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     const transcriptArray = message.transcriptArray;
                     const meetingTitle = message.meetingTitle;
                     const attendeeReport = message.attendeeReport;
-                    
+
                     // Create session metadata
                     const metadata = {
                         id: sessionId,
@@ -342,7 +422,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                         attendeeCount: attendeeReport?.totalUniqueAttendees || 0,
                         preview: transcriptArray.slice(0, 3).map(c => `${c.Name}: ${c.Text.substring(0, 50)}`).join(' | ')
                     };
-                    
+
                     // Save transcript in chunks to avoid size limits
                     const chunks = chunkArray(transcriptArray, 100); // 100 items per chunk
                     for (let i = 0; i < chunks.length; i++) {
@@ -351,18 +431,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                         });
                     }
                     metadata.chunkCount = chunks.length;
-                    
+
                     // Save attendee report if exists
                     if (attendeeReport) {
                         await chrome.storage.local.set({
                             [`${sessionId}_attendees`]: attendeeReport
                         });
                     }
-                    
+
                     // Update session index
                     const { session_index = [] } = await chrome.storage.local.get('session_index');
                     session_index.push(metadata);
-                    
+
                     // Keep only last 10 sessions
                     if (session_index.length > 10) {
                         const toDelete = session_index.shift();
@@ -374,18 +454,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                         keysToDelete.push(`${toDelete.id}_attendees`);
                         await chrome.storage.local.remove(keysToDelete);
                     }
-                    
+
                     // Sort by timestamp (newest first)
                     session_index.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-                    
+
                     await chrome.storage.local.set({ 'session_index': session_index });
                     console.log('[Service Worker] Session saved to history:', sessionId);
-                    
+
                 } catch (error) {
                     console.error('[Service Worker] Failed to save session:', error);
                 }
                 break;
-                
+
             case 'download_captions':
                 console.log('[Teams Caption Saver] Download request received:', {
                     format: message.format,
@@ -399,16 +479,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             case 'save_on_leave':
                 // Generate unique ID for this save request
                 const saveId = `${message.meetingTitle}_${message.recordingStartTime}`;
-                
+
                 // Prevent duplicate saves
                 if (autoSaveInProgress || lastAutoSaveId === saveId) {
                     console.log('Auto-save already in progress or completed for this meeting, skipping...');
                     break;
                 }
-                
+
                 autoSaveInProgress = true;
                 lastAutoSaveId = saveId;
-                
+
                 try {
                     const settings = await chrome.storage.sync.get(['autoSaveOnEnd', 'defaultSaveFormat']);
                     if (settings.autoSaveOnEnd && message.transcriptArray.length > 0) {
@@ -438,7 +518,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             case 'display_captions':
                 await createViewerTab(message.transcriptArray);
                 break;
-            
+
+            case 'store_screenshot':
+                try {
+                    await storeScreenshotForMeeting(message.meetingId, message.screenshot);
+                } catch (error) {
+                    console.error('[Service Worker] Failed to store screenshot:', error);
+                }
+                break;
+
             case 'update_badge_status':
                 updateBadge(message.capturing);
                 // Reset auto-save state when starting a new capture session
@@ -446,9 +534,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     lastAutoSaveId = null;
                     autoSaveInProgress = false;
                     console.log('New capture session started, auto-save state reset.');
+                } else if (message.meetingId) {
+                    await clearScreenshotsForMeeting(message.meetingId);
                 }
                 break;
-                
+
             case 'error_logged':
                 // Central error logging - could send to analytics service
                 console.warn('[Teams Caption Saver] Error logged:', message.error);
@@ -456,6 +546,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 break;
         }
     })();
-    
+
     return true; // Indicates that the response will be sent asynchronously
 });
